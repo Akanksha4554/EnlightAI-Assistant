@@ -35,7 +35,11 @@ def save_history(chats):
         json.dump(chats, f)
 
 # Initialize Groq client
-client = Groq()
+try:
+    client = Groq()
+except TypeError as e:
+    st.error(f"Failed to initialize Groq client: {e}")
+    client = None
 
 # Initialize session state
 if "chats" not in st.session_state or not isinstance(st.session_state.chats, dict):
@@ -67,10 +71,23 @@ def categorize_chats(chats):
 
     return today, yesterday, last_7_days
 
+# Helper function to ensure complete sentence
+def ensure_full_sentence(text):
+    # List of sentence-ending punctuations
+    sentence_endings = ['.', '!', '?']
+
+    # Check if the response ends with a complete sentence
+    if text and text[-1] not in sentence_endings:
+        # If not, add a period at the end
+        return text.strip() + "."
+
+    return text.strip()
+
 # Sidebar for navigating chats and managing parameters
 with st.sidebar:
     st.header("**Chat History**")
-    st.button("**Start New Chat**", key="start_new_chat", on_click=lambda: st.session_state.update({"current_chat": None}))
+    st.button("**Start New Chat**", key="start_new_chat",
+              on_click=lambda: st.session_state.update({"current_chat": None}))
 
     today, yesterday, last_7_days = categorize_chats(st.session_state.chats)
 
@@ -101,10 +118,10 @@ with st.sidebar:
     st.session_state.max_tokens = st.slider(
         "**Max Tokens**",
         min_value=50,
-        max_value=2000,
-        value=500,
+        max_value=4000,  # Increased max token limit to allow for longer completions
+        value=1500,  # Adjust this depending on your model's capacity
         step=50,
-        help="Limits the maximum length of the response in tokens."
+        help="Limits the maximum length of the response in tokens. Ensure the response is fully generated."
     )
 
     # Response type selection
@@ -123,7 +140,7 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 # Display the page title
-st.markdown(""" 
+st.markdown("""
 <div style="text-align: center;">
     <h1>Welcome to EnlightAI 🤖</h1>
     <h5><i>🌐 Smarter Conversations, ⚡ Faster Solutions</i></h5>
@@ -131,8 +148,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.expander("**About this app**"):
-    st.write(""" 
-        **EnlightAI** is an AI-powered chatbot, powered by the **Llama 3.1-8b-instant model**, designed to:
+    st.write("""
+        **EnlightAI** is an AI-powered chatbot, built using the **Llama 3.3 Versatile model**, designed to:
 
         - Provide accurate, context-aware answers to user queries.
         - Store chat history persistently, allowing easy access to past conversations.
@@ -144,7 +161,8 @@ with st.expander("**About this app**"):
 if st.session_state.current_chat:
     for message in st.session_state.chats[st.session_state.current_chat]:
         with st.chat_message(message["role"]):
-            st.markdown(f"{message['role'].capitalize()}: {message['content']}")
+            # Bold the role (User or Assistant)
+            st.markdown(f"**{message['role'].capitalize()}**: {message['content']}")
 
 # Handle user input
 user_prompt = st.chat_input("Ask EnlightAI...")
@@ -162,32 +180,54 @@ if user_prompt:
     })
 
     with st.chat_message("user"):
-        st.markdown(f"User: {user_prompt}")
+        # Bold the 'User' label
+        st.markdown(f"**User**: {user_prompt}")
 
-    # Generate assistant response
-    messages = [{"role": "system", "content": "You are a helpful assistant"}]
-    messages += [{"role": msg["role"], "content": msg["content"]} for msg in st.session_state.chats[st.session_state.current_chat]]
+    if client:
+        # Check if the user's input is asking about the assistant
+        if any(question in user_prompt.lower() for question in [
+            "who are you", "what are you", "tell me about yourself",
+            "who is this", "what is your name", "what is enlightenment",
+            "what do you do", "describe yourself", "who created you",
+            "what are you doing", "can you introduce yourself", "who are you really"
+        ]):
+            assistant_response = (
+                "I am an AI-powered assistant. "
+                "I am designed to help users by providing accurate and insightful information, answering questions, and assisting with various tasks. "
+                "While I don't have emotions or personal experiences, I am here to assist with your needs and make your experience better. "
+                "Feel free to ask me anything, and I'll do my best to assist you!"
+            )
+        else:
+            # Otherwise, generate the regular response
+            messages = [{"role": "system", "content": "You are a helpful assistant"}]
+            messages += [{"role": msg["role"], "content": msg["content"]} for msg in
+                         st.session_state.chats[st.session_state.current_chat][
+                         -5:]]  # Use only the last 5 messages for context
 
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=messages,
-        temperature=st.session_state.temperature,
-        max_tokens=st.session_state.max_tokens
-    )
-    assistant_response = response.choices[0].message.content
+            response = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=messages,
+                temperature=st.session_state.temperature,
+                max_tokens=st.session_state.max_tokens
+            )
+            assistant_response = response.choices[0].message.content
 
-    # Adjust response type based on user selection
-    if st.session_state.response_type == "Brief":
-        assistant_response = assistant_response[:300]  # Truncate to 300 characters for brevity
+            # Ensure the response ends with a complete sentence
+            assistant_response = ensure_full_sentence(assistant_response)
 
-    # Add assistant response to chat history
-    st.session_state.chats[st.session_state.current_chat].append({
-        "role": "assistant",
-        "content": assistant_response,
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-    save_history(st.session_state.chats)
+            # Adjust response type based on user selection
+            if st.session_state.response_type == "Brief":
+                assistant_response = assistant_response[:300]  # Truncate to 300 characters for brevity
 
-    # Display assistant response
-    with st.chat_message("assistant"):
-        st.markdown(f"Assistant: {assistant_response}")
+        # Add assistant response to chat history
+        st.session_state.chats[st.session_state.current_chat].append({
+            "role": "assistant",
+            "content": assistant_response,
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        save_history(st.session_state.chats)
+
+        # Display assistant response with bold label
+        with st.chat_message("assistant"):
+            # Bold the 'Assistant' label
+            st.markdown(f"**Assistant**: {assistant_response}")
